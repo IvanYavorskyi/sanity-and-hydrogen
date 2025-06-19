@@ -1,236 +1,94 @@
-import {redirect, type LoaderFunctionArgs} from '@shopify/remix-oxygen';
-import {useLoaderData, type MetaFunction} from 'react-router';
-import {
-  getSelectedProductOptions,
-  Analytics,
-  useOptimisticVariant,
-  getProductOptions,
-  getAdjacentAndFirstAvailableVariants,
-  useSelectedOptionInUrlParam,
-} from '@shopify/hydrogen';
-import {ProductPrice} from '~/components/ProductPrice';
-import {ProductImage} from '~/components/ProductImage';
-import {ProductForm} from '~/components/ProductForm';
-import {redirectIfHandleIsLocalized} from '~/lib/redirect';
+// app/routes/products.$handle.tsx
+import {type LoaderFunctionArgs} from '@shopify/remix-oxygen';
+import {PortableText} from '@portabletext/react';
+import groq from 'groq';
+import type {Product} from '@shopify/hydrogen/storefront-api-types';
+import type {SanityDocument} from '@sanity/client';
+import {useLoaderData, Link, type MetaFunction} from 'react-router';
 
-export const meta: MetaFunction<typeof loader> = ({data}) => {
-  return [
-    {title: `Hydrogen | ${data?.product.title ?? ''}`},
-    {
-      rel: 'canonical',
-      href: `/products/${data?.product.handle}`,
-    },
-  ];
-};
-
-export async function loader(args: LoaderFunctionArgs) {
-  // Start fetching non-critical data without blocking time to first byte
-  const deferredData = loadDeferredData(args);
-
-  // Await the critical data required to render initial state of the page
-  const criticalData = await loadCriticalData(args);
-
-  return {...deferredData, ...criticalData};
-}
-
-/**
- * Load data necessary for rendering content above the fold. This is the critical data
- * needed to render the page. If it's unavailable, the whole page should 400 or 500 error.
- */
-async function loadCriticalData({
-  context,
+export async function loader({
   params,
-  request,
+  context: {storefront, sanityClient},
 }: LoaderFunctionArgs) {
-  const {handle} = params;
-  const {storefront} = context;
+  try {
+    // 1️⃣ Fetch the Shopify product
+    const {product} = await storefront.query<{product: Product}>(
+      `
+      query Product($handle: String!) {
+        product(handle: $handle) {
+          id
+          title
+          handle
+        }
+      }
+    `,
+      {variables: {handle: params.handle}},
+    );
 
-  if (!handle) {
-    throw new Error('Expected product handle to be defined');
+    if (!product?.id) {
+      // Product not found → 404
+      return new Response(JSON.stringify({error: 'Product not found'}), {
+        status: 404,
+        headers: {'Content-Type': 'application/json'},
+      });
+    }
+
+    // 2️⃣ Fetch the Sanity document
+    const query = groq`*[_type=="product" && store.slug.current == $handle][0]{
+      body,
+      "image": store.previewImageUrl
+    }`;
+    const sanityData = await sanityClient.fetch<SanityDocument>(query, {
+      handle: params.handle,
+    });
+
+    // 3️⃣ Return a JSON response with both
+    return new Response(JSON.stringify({product, sanityData}), {
+      status: 200,
+      headers: {'Content-Type': 'application/json'},
+    });
+  } catch (err: any) {
+    console.error('Loader error:', err);
+    // 500 with JSON body
+    return new Response(
+      JSON.stringify({error: err.message || 'Internal Server Error'}),
+      {status: 500, headers: {'Content-Type': 'application/json'}},
+    );
   }
-
-  const [{product}] = await Promise.all([
-    storefront.query(PRODUCT_QUERY, {
-      variables: {handle, selectedOptions: getSelectedProductOptions(request)},
-    }),
-    // Add other queries here, so that they are loaded in parallel
-  ]);
-
-  if (!product?.id) {
-    throw new Response(null, {status: 404});
-  }
-
-  // The API handle might be localized, so redirect to the localized handle
-  redirectIfHandleIsLocalized(request, {handle, data: product});
-
-  return {
-    product,
-  };
 }
 
-/**
- * Load data for rendering content below the fold. This data is deferred and will be
- * fetched after the initial page load. If it's unavailable, the page should still 200.
- * Make sure to not throw any errors here, as it will cause the page to 500.
- */
-function loadDeferredData({context, params}: LoaderFunctionArgs) {
-  // Put any API calls that is not critical to be available on first page render
-  // For example: product reviews, product recommendations, social feeds.
+export default function Page() {
+  // Since loader always returns a JSON object, parse it here
+  const data = useLoaderData<{
+    product?: Product;
+    sanityData?: SanityDocument;
+    error?: string;
+  }>();
 
-  return {};
-}
+  console.log({data});
 
-export default function Product() {
-  const {product} = useLoaderData<typeof loader>();
-
-  // Optimistically selects a variant with given available variant information
-  const selectedVariant = useOptimisticVariant(
-    product.selectedOrFirstAvailableVariant,
-    getAdjacentAndFirstAvailableVariants(product),
-  );
-
-  // Sets the search param to the selected variant without navigation
-  // only when no search params are set in the url
-  useSelectedOptionInUrlParam(selectedVariant.selectedOptions);
-
-  // Get the product options array
-  const productOptions = getProductOptions({
-    ...product,
-    selectedOrFirstAvailableVariant: selectedVariant,
-  });
-
-  const {title, descriptionHtml} = product;
+  if (data.error) {
+    return <p className="text-red-500">Error: {data.error}</p>;
+  }
+  const {product, sanityData} = data!;
 
   return (
-    <div className="product">
-      <ProductImage image={selectedVariant?.image} />
-      <div className="product-main">
-        <h1>{title}</h1>
-        <ProductPrice
-          price={selectedVariant?.price}
-          compareAtPrice={selectedVariant?.compareAtPrice}
+    <div className="mx-auto p-12 prose prose-a:text-blue-500">
+      <h1 className="text-3xl font-bold">{product!.title}</h1>
+
+      {sanityData?.image && (
+        <img
+          src={sanityData.image}
+          alt={product!.title}
+          className="w-32 h-32 object-cover float-left mr-6 mb-4 rounded-xl"
         />
-        <br />
-        <ProductForm
-          productOptions={productOptions}
-          selectedVariant={selectedVariant}
-        />
-        <br />
-        <br />
-        <p>
-          <strong>Description</strong>
-        </p>
-        <br />
-        <div dangerouslySetInnerHTML={{__html: descriptionHtml}} />
-        <br />
-      </div>
-      <Analytics.ProductView
-        data={{
-          products: [
-            {
-              id: product.id,
-              title: product.title,
-              price: selectedVariant?.price.amount || '0',
-              vendor: product.vendor,
-              variantId: selectedVariant?.id || '',
-              variantTitle: selectedVariant?.title || '',
-              quantity: 1,
-            },
-          ],
-        }}
-      />
+      )}
+
+      {sanityData?.body && <PortableText value={sanityData.body} />}
+
+      <p>
+        <Link to="/products">&larr; Back to All Products</Link>
+      </p>
     </div>
   );
 }
-
-const PRODUCT_VARIANT_FRAGMENT = `#graphql
-  fragment ProductVariant on ProductVariant {
-    availableForSale
-    compareAtPrice {
-      amount
-      currencyCode
-    }
-    id
-    image {
-      __typename
-      id
-      url
-      altText
-      width
-      height
-    }
-    price {
-      amount
-      currencyCode
-    }
-    product {
-      title
-      handle
-    }
-    selectedOptions {
-      name
-      value
-    }
-    sku
-    title
-    unitPrice {
-      amount
-      currencyCode
-    }
-  }
-` as const;
-
-const PRODUCT_FRAGMENT = `#graphql
-  fragment Product on Product {
-    id
-    title
-    vendor
-    handle
-    descriptionHtml
-    description
-    encodedVariantExistence
-    encodedVariantAvailability
-    options {
-      name
-      optionValues {
-        name
-        firstSelectableVariant {
-          ...ProductVariant
-        }
-        swatch {
-          color
-          image {
-            previewImage {
-              url
-            }
-          }
-        }
-      }
-    }
-    selectedOrFirstAvailableVariant(selectedOptions: $selectedOptions, ignoreUnknownOptions: true, caseInsensitiveMatch: true) {
-      ...ProductVariant
-    }
-    adjacentVariants (selectedOptions: $selectedOptions) {
-      ...ProductVariant
-    }
-    seo {
-      description
-      title
-    }
-  }
-  ${PRODUCT_VARIANT_FRAGMENT}
-` as const;
-
-const PRODUCT_QUERY = `#graphql
-  query Product(
-    $country: CountryCode
-    $handle: String!
-    $language: LanguageCode
-    $selectedOptions: [SelectedOptionInput!]!
-  ) @inContext(country: $country, language: $language) {
-    product(handle: $handle) {
-      ...Product
-    }
-  }
-  ${PRODUCT_FRAGMENT}
-` as const;

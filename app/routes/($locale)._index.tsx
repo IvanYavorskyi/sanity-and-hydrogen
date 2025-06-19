@@ -56,12 +56,15 @@ function loadDeferredData({context}: LoaderFunctionArgs) {
   };
 }
 
-export default function Homepage() {
-  const data = useLoaderData<typeof loader>();
+export default function Index() {
   return (
-    <div className="home">
-      <FeaturedCollection collection={data.featuredCollection} />
-      <RecommendedProducts products={data.recommendedProducts} />
+    <div className="mx-auto p-12 prose prose-xl prose-a:text-blue-500">
+      <h1 className="text-3xl font-bold">Home</h1>
+      <p>
+        <Link className="text-blue-500 underline" to="/products">
+          All Products
+        </Link>
+      </p>
     </div>
   );
 }
