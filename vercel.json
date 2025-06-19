@@ -1,8 +1,0 @@
-{
-  "version": 2,
-  "functions": {
-    ".vercel/output/functions/**/*.func/**": {
-      "runtime": "vercel/node@18.x"
-    }
-  }
-}
